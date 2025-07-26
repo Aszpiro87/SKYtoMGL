@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/><meta content="noindex, nofollow" name="robots"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>SKY to MGL</title>
+<link href="apple-touch-icon.png" rel="apple-touch-icon"/>
+<meta content="yes" name="apple-mobile-web-app-capable"/>
+<meta content="black" name="apple-mobile-web-app-status-bar-style"/>
+<meta content="#2A2A2A" name="theme-color"/>
+<link href="manifest.json" rel="manifest"/>
+<link href="https://unpkg.com/leaflet/dist/leaflet.css" rel="stylesheet">
+<script src="https://unpkg.com/leaflet/dist/leaflet.js">
+document.addEventListener("DOMContentLoaded", () => {
+  try {
+    const mapDiv = document.getElementById("map");
+    const map = L.map(mapDiv).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    window.currentMap = map;
+  } catch (err) {
+    console.warn("Carte initiale non chargée (offline).");
+  }
+});
+</script>
+<style>
+    html, body { margin:0; padding:0; height:100%; background-color:#2A2A2A; color:white; font-family:sans-serif; }
+    body { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow:hidden; }
+    #topBar { display:flex; justify-content:space-between; align-items:center; width:95%; padding:5px 0; position:relative; }
+    #logo { position:absolute; left:50%; transform:translateX(-50%); height:40px; }
+    #fileInputLabel, #shareBtn { background-color:#444; color:white; border:none; padding:8px 18px; font-size:13px; cursor:pointer; border-radius:4px; z-index:2; }
+    #fileInput { display:none; }
+    #content { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:space-between; width:95%; }
+    #map { flex:1; width:100%; border:1px solid #555; }
+    #ertOutput {
+  width: 100%;
+  height: 35%;
+  display: flex;
+  justify-content: center;   /* centre gauche/droite */
+  align-items: flex-start;   /* pas de centrage vertical */
+  font-family: monospace;
+  font-size: 13px;
+  white-space: pre;
+  background-color: #1E1E1E;
+  color: white;
+  border: 1px solid #444;
+}
+    .leaflet-tooltip { background:rgba(255,255,255,0.95)!important; border:1px solid #333!important; border-radius:9px!important; padding:3px 6px!important; font-size:13px!important; font-weight:500!important; color:#000!important; box-shadow:0 1px 3px rgba(0,0,0,0.3); line-height:1.2!important; text-align:center!important; }
+    .waypoint-marker { filter:drop-shadow(1px 1px 2px rgba(0,0,0,0.5)); }
+  </style>
+</link></head>
+<body>
+<div id="topBar">
+<label for="fileInput" id="fileInputLabel">SkyDemon GPX</label>
+<img alt="Logo" id="logo" src="apple-touch-icon.png"/>
+<button id="shareBtn" style="display:none;"></button>
+<input accept=".gpx" id="fileInput" type="file"/>
+</div>
+<div id="content">
+<div id="map"></div>
+<pre id="ertOutput">Import a SkyDemon GPX route
+to generate an MGL compatible route
+
+If offline – the map view is unavailable</pre>
+</div>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const fileInput = document.getElementById("fileInput");
+  const fileLabel = document.getElementById("fileInputLabel");
+  fileLabel.addEventListener("click", () => {
+    document.getElementById("map").innerHTML = "";
+    document.getElementById("ertOutput").textContent =
+      "Import a SkyDemon GPX route\nto generate an MGL compatible route";
+    document.getElementById("shareBtn").style.display = "none";
+    fileInput.textContent = "";
+  });
+});
+function removeAccents(str) { return str.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+function compressName(name) {
+  let base = removeAccents(name).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (base.length <= 6) return base;
+  const vowels = "AEIOU"; let consonants = "";
+  for (let c of base) if (!vowels.includes(c)) consonants += c;
+  let compressed = consonants.slice(0, 4);
+  for (let c of base) { if (compressed.length >= 6) break; if (!compressed.includes(c)) compressed += c; }
+  return compressed.slice(0, 6);
+}
+function makeShortName(wp, index) {
+  if (wp.oaci) return wp.oaci.toUpperCase().substring(0, 6);
+  if (!wp.name || wp.name.trim().toUpperCase() === "WP") return "WPT" + String(index+1).padStart(3,"0");
+  return compressName(wp.name);
+}
+function makeLongName(wp) {
+  if (!wp.name || wp.name.trim().toUpperCase() === "WP") return `${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)}`;
+  let n = removeAccents(wp.name.trim());
+  return n.length > 27 ? n.substring(0,27) : n;
+}
+let extractedWaypoints = [];
+function generateERTBinary() {
+  let binary = [];
+  extractedWaypoints.forEach((wp,i)=>{
+    const latEnc = new DataView(new ArrayBuffer(4)); latEnc.setInt32(0, Math.round(wp.lat * 180000), true);
+    const lonEnc = new DataView(new ArrayBuffer(4)); lonEnc.setInt32(0, Math.round(wp.lon * 180000), true);
+    const altEnc = new DataView(new ArrayBuffer(4)); altEnc.setInt32(0, Math.round(wp.alt), true);
+    binary.push(...new Uint8Array(latEnc.buffer)); binary.push(...new Uint8Array(lonEnc.buffer)); binary.push(...new Uint8Array(altEnc.buffer)); binary.push(0x00);
+    const shortName = makeShortName(wp, i); binary.push(shortName.length);
+    const shortBytes = new TextEncoder().encode(shortName);
+    for (let j = 0; j < 6; j++) binary.push(j < shortBytes.length ? shortBytes[j] : 0x00);
+    const longName = makeLongName(wp); binary.push(longName.length);
+    const longBytes = new TextEncoder().encode(longName);
+    for (let j = 0; j < 27; j++) binary.push(j < longBytes.length ? longBytes[j] : 0x00);
+  });
+  return new Uint8Array(binary);
+}
+function resetUI() {
+  document.getElementById("map").style.display = "none";
+  document.getElementById("ertOutput").style.display = "none";
+  document.getElementById("ertOutput").textContent = "";
+  document.getElementById("shareBtn").style.display = "none";
+}
+document.getElementById("fileInput").addEventListener("change", function(event) {
+  const file = event.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    resetUI();
+    document.getElementById("ertOutput").style.display = "block";
+    const parser = new DOMParser(); const xml = parser.parseFromString(e.target.result, "application/xml");
+    const ns = { def: "http://www.topografix.com/GPX/1/1", skd: "http://www.skydemon.aero/gpxextensions" };
+    extractedWaypoints = []; const rtepts = xml.getElementsByTagName("rtept"); let textOutput = "";
+    for (let i = 0; i < rtepts.length; i++) {
+      const el = rtepts[i]; const lat = parseFloat(el.getAttribute("lat")); const lon = parseFloat(el.getAttribute("lon"));
+      const nameEl = el.getElementsByTagName("name")[0]; const symEl = el.getElementsByTagName("sym")[0]; const descEl = el.getElementsByTagName("desc")[0];
+      const name = nameEl ? nameEl.textContent : "";
+      const oaci = (symEl && symEl.textContent.length==4) ? symEl.textContent :
+                   (descEl && descEl.textContent.length==4 ? descEl.textContent : "");
+      const altEl = el.getElementsByTagNameNS(ns.skd, "level")[0]; let alt = 0;
+      if (altEl) { const val = altEl.getAttribute("value"); alt = altEl.getAttribute("type") === "F" ? parseInt(val) * 100 : parseInt(val); }
+      extractedWaypoints.push({ name, lat, lon, alt, oaci });
+      const shortName = makeShortName(extractedWaypoints[i], i); const longName = makeLongName(extractedWaypoints[i]);
+      textOutput += shortName.padEnd(8) + longName.padEnd(29) + alt.toString().padStart(5) + " ft\n";
+    }
+    document.getElementById("ertOutput").textContent = textOutput;
+    const base = file.name.replace(/\.gpx$/i,""); const comp = compressName(base).toUpperCase();
+    const shareBtn = document.getElementById("shareBtn");
+    shareBtn.textContent = comp + ".ERT"; shareBtn.style.display = "inline-block";
+    shareBtn.onclick = async function() {
+      const binary = generateERTBinary(); const ertFile = new File([binary], comp + ".ERT", { type: "application/octet-stream" });
+      if (navigator.canShare && navigator.canShare({ files: [ertFile] })) {
+        try { await navigator.share({ files: [ertFile] }); } catch (err) { alert("Partage annulé ou non supporté."); }
+      } else { alert("Partage non supporté sur ce navigateur."); }
+    };
+    try {
+      const mapDiv = document.getElementById("map"); mapDiv.style.display = "block"; mapDiv.innerHTML = "";
+      if (window.currentMap) { window.currentMap.remove(); }
+      const map = L.map(mapDiv).setView([20, 0], 2);
+      window.currentMap = map;
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:18, attribution:'&copy; OpenStreetMap' }).addTo(map);
+      const latlngs = extractedWaypoints.map((wp) => [wp.lat, wp.lon]);
+      L.polyline(latlngs, { color: "#FF00FF", weight: 11, opacity: 1 }).addTo(map);
+      extractedWaypoints.forEach((wp,i) => {
+        const marker = L.circleMarker([wp.lat, wp.lon], { radius:9, fillColor:"white", color:"black", weight:1.5, opacity:1, fillOpacity:1 }).addTo(map);
+        marker.bindTooltip(`${makeShortName(wp,i)}\n${wp.alt} ft`, { permanent:true, direction:"right", offset:[10,0] });
+      });
+      map.fitBounds(latlngs);
+    } catch (err) { console.warn("Carte non chargée (mode offline)", err); }
+    fileInput.textContent = "";
+  };
+  reader.readAsText(file);
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  try {
+    const mapDiv = document.getElementById("map");
+    const map = L.map(mapDiv).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    window.currentMap = map;
+  } catch (err) {
+    console.warn("Carte initiale non chargée (offline).");
+  }
+});
+</script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch((err) => {
+      console.warn("Service Worker registration failed:", err);
+    });
+  });
+}
+</script>
+</body>
+</html>
